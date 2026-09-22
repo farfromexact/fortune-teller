@@ -40,3 +40,12 @@ next-env.d.ts
 /.wrangler/
 /outputs/
 /work/
+
+# Python and local Streamlit secrets
+__pycache__/
+*.py[cod]
+.venv/
+.streamlit/secrets.toml
+
+# Local deployment packages, never publish as source
+.openai/*.tar.gz
