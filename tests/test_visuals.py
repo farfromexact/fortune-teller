@@ -1,5 +1,8 @@
 import copy
 import itertools
+from pathlib import Path
+import sys
+from types import ModuleType
 import unittest
 from unittest.mock import patch
 import xml.etree.ElementTree as ET
@@ -13,6 +16,24 @@ from test_personalization import answer, LINES, QUESTION, mock_transport
 
 
 class RitualTests(unittest.TestCase):
+    def test_retained_callback_resolves_engine_after_module_replacement(self):
+        # Reproduce a live callback imported with the pre-animation engine.
+        # The source watcher then replaces sys.modules, not the callback's
+        # globals. A module-level engine reference would remain stale.
+        legacy_engine = ModuleType("guanbian_engine")
+        namespace = {"__name__": "retained_ritual"}
+        source = (Path(__file__).resolve().parents[1] / "guanbian_ritual.py").read_text(encoding="utf-8")
+        with patch.dict(sys.modules, {"guanbian_engine": legacy_engine}):
+            exec(compile(source, "guanbian_ritual.py", "exec"), namespace)
+        state = {"stage": "cast", "cast_run_id": "updated", "lines": [], "coin_tosses": []}
+        with patch("guanbian_engine.cast_coins", return_value=(2, 3, 3)) as cast:
+            event = {"run_id": "updated", "index": 1}
+            self.assertTrue(namespace["accept_toss"](state, event))
+            self.assertFalse(namespace["accept_toss"](state, event))
+            cast.assert_called_once_with()
+        self.assertEqual(state["lines"], [8])
+        self.assertEqual(state["coin_tosses"], [[2, 3, 3]])
+
     def test_actual_coin_faces_and_sums_for_all_eight_outcomes(self):
         for bits in itertools.product((0, 1), repeat=3):
             with patch("guanbian_engine.secrets.randbelow", side_effect=bits):
