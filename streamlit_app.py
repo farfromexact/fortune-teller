@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import html
-import re
-from datetime import datetime, timedelta, timezone
+import os
+from datetime import date, datetime, timedelta
 
 import streamlit as st
 
 from guanbian_engine import cast_line, line_glyph, line_label, resolve_reading
 from guanbian_records import export_records, import_records, make_record
+from guanbian_birth import from_birthday, from_manual, profile_label
+from guanbian_llm import AdviceError, Config, DEFAULT_MODEL, generate_advice, safety_notice
 
 
 st.set_page_config(page_title="观变 · 以易观时，以行验知", page_icon="䷀", layout="centered")
@@ -52,6 +54,7 @@ def init_state() -> None:
     defaults = {
         "stage": "ask", "question": "", "lines": [], "records": [],
         "followups": [], "action": "", "review_days": 7,
+        "birth_profile": None, "ai": None, "ai_calls": 0,
     }
     for key, value in defaults.items():
         if key not in st.session_state:
@@ -69,7 +72,91 @@ def new_question() -> None:
     st.session_state.action = ""
     st.session_state.question = ""
     st.session_state.question_input = ""
+    st.session_state.birth_profile = None
+    st.session_state.ai = None
+    for key in list(st.session_state):
+        if key.startswith("birth_input_"):
+            del st.session_state[key]
     go("ask")
+
+
+def llm_config() -> Config:
+    def setting(name: str, default: str = "") -> str:
+        value = os.environ.get(name)
+        if value is None:
+            try:
+                value = st.secrets.get(name, default)
+            except Exception:
+                # Never render a parser exception: it may contain a secret line.
+                value = default
+        return str(value).strip()
+    return Config(setting("DEEPSEEK_API_KEY"), setting("DEEPSEEK_MODEL", DEFAULT_MODEL))
+
+
+def birth_input() -> tuple[dict | None, bool]:
+    profile = None
+    valid = True
+    with st.expander("加入生辰背景（可选）"):
+        st.caption("增加文化体验和个性化视角，不代表提高预测准确率；不填也能完整体验。")
+        mode = st.radio("提供方式", ["不提供", "填写生日", "已有八字"], key="birth_input_mode", horizontal=True)
+        try:
+            if mode == "填写生日":
+                day = st.date_input("公历出生日期", value=None, min_value=date(1900, 1, 1), max_value=date.today(), key="birth_input_date")
+                known = st.checkbox("我知道出生时间（已换算为 UTC+8）", key="birth_input_known")
+                clock = st.time_input("出生时间", value=None, key="birth_input_time") if known else None
+                valid = day is not None and (not known or clock is not None)
+                if valid:
+                    profile = from_birthday(day, clock)
+                else:
+                    st.caption("请选择日期和已知时间；也可选“不提供”直接继续。")
+                st.caption("使用固定 UTC+8，不自动处理出生地、真太阳时或历史夏令时；接近节令交界时请谨慎核对。")
+            elif mode == "已有八字":
+                text = st.text_input("年柱、月柱、日柱、时柱", placeholder="例如：乙酉 戊子 辛巳 壬辰", max_chars=32, key="birth_input_manual")
+                st.caption("时柱不详可只填前三柱；这里只检查干支格式，不保证四柱对应同一出生时刻。")
+                valid = bool(text.strip())
+                if valid:
+                    profile = from_manual(text)
+            if profile:
+                st.text(profile_label(profile))
+                st.caption(profile["method"])
+                st.caption(profile["uncertainty"])
+        except ValueError as exc:
+            st.warning(str(exc))
+            valid = False
+        st.caption("生日只用于本次会话内排盘。点击生成 AI 建议时，会把问题、卦象和四柱发给 DeepSeek，不发送原始生日；四柱也属于个人信息，保存与备份前请自行考虑。")
+    return profile, valid
+
+
+def show_advice(snapshot: dict) -> None:
+    advice = snapshot["advice"]
+    for title, key in (("01 · 当前局势", "situation"), ("02 · 关键变化", "change"), ("03 · 机会与风险", "opportunities_risks")):
+        st.markdown(f"#### {title}")
+        st.text(advice[key])
+    st.markdown("#### 04 · 建议行动")
+    for index, action in enumerate(advice["actions"], 1):
+        st.text(f"{index}. {action}")
+    st.markdown("#### 05 · 依据与边界")
+    st.text(advice["boundary"])
+    if advice["birth_context"] != "未提供个人背景":
+        st.markdown("#### 生辰背景 · 文化反思")
+        st.text(advice["birth_context"])
+    st.caption(f"{snapshot['provider']} · {snapshot['model']} · {snapshot['created_at'][:19]} UTC · {snapshot['prompt_version']}")
+
+
+def request_advice(followup: str = "") -> dict | None:
+    if st.session_state.ai_calls >= 12:
+        st.warning("本会话的 12 次模型请求已用完，已生成的结果仍可保存与复盘。")
+        return None
+    st.session_state.ai_calls += 1
+    try:
+        with st.spinner("正在结合问题与固定卦象整理建议……"):
+            return generate_advice(llm_config(), st.session_state.question, st.session_state.lines,
+                                   st.session_state.birth_profile,
+                                   previous=st.session_state.ai["advice"] if st.session_state.ai else None,
+                                   followups=st.session_state.followups, followup=followup)
+    except AdviceError as exc:
+        st.error(str(exc))
+        return None
 
 
 def header() -> None:
@@ -89,12 +176,18 @@ def ask_view() -> None:
     st.markdown('<div class="gb-lead">观变不替你预言命运。它借《周易》的变化视角，帮你整理处境、风险与下一步行动。</div>', unsafe_allow_html=True)
     with st.container(border=True):
         st.text_area("写下一个真实而具体的问题", key="question_input", height=130, max_chars=180, placeholder="例如：我是否应该在未来三个月内转换工作方向？")
-        if st.button("开始观变  →", type="primary", use_container_width=True, disabled=not 8 <= len(st.session_state.question_input.strip()) <= 180):
+        profile, valid_profile = birth_input()
+        notice = safety_notice(st.session_state.question_input)
+        if notice:
+            st.warning(notice)
+        if st.button("开始观变  →", type="primary", use_container_width=True, disabled=not 8 <= len(st.session_state.question_input.strip()) <= 180 or not valid_profile or bool(notice)):
             st.session_state.question = st.session_state.question_input.strip()
             st.session_state.lines = []
             st.session_state.followups = []
+            st.session_state.birth_profile = profile
+            st.session_state.ai = None
             go("cast")
-    st.caption("问题不会改变投掷结果；它用于记录本次占问。当前版本的解读还未按问题内容个性化。")
+    st.caption("问题与生辰不会改变随机卦象。完成起卦后，可选择让 DeepSeek 结合这些背景生成建议。")
     st.markdown("#### 不知道怎么问？")
     st.markdown("可以试着问：我是否应该接受这份新工作？｜这段关系中，我真正需要看清什么？｜这个合作现在适合继续推进吗？")
     st.divider()
@@ -157,47 +250,66 @@ def reading_view() -> None:
             st.markdown(f'<div class="gb-yao">{line_glyph(changed_value)}</div>', unsafe_allow_html=True)
         st.write(reading.changed.name)
 
-    if re.search(r"自杀|自残|轻生|急救|胸痛|癌症|确诊|用药|律师|诉讼|买入|卖出|股票|期货|币圈|贷款", st.session_state.question):
-        st.warning("这个问题可能涉及健康、法律、投资或人身安全。以下内容只能帮助梳理想法，不能代替专业意见或紧急援助。")
+    notice = safety_notice(st.session_state.question)
+    if notice:
+        st.warning(notice)
+        return
 
     st.divider()
+    st.subheader("把卦象放回你的问题")
+    if st.session_state.birth_profile:
+        with st.expander("本次使用的生辰背景"):
+            st.text(profile_label(st.session_state.birth_profile))
+            st.caption(st.session_state.birth_profile["method"])
+            st.caption(st.session_state.birth_profile["uncertainty"])
+    config = llm_config()
+    if not st.session_state.ai:
+        st.caption("只在你点击后调用模型：发送本次问题、固定卦象及可选四柱。AI 可能出错，不是经典原文或命运预测。")
+        if not config.api_key:
+            st.info("尚未配置 DeepSeek。管理员可在 Streamlit Secrets 中填写 DEEPSEEK_API_KEY；不影响基础体验。")
+        if st.button("结合我的问题生成建议", type="primary", disabled=not config.api_key or st.session_state.ai_calls >= 12):
+            response = request_advice()
+            if response:
+                st.session_state.ai = response
+                st.rerun()
+    if st.session_state.ai:
+        with st.container(border=True):
+            show_advice(st.session_state.ai)
+    else:
+        with st.container(border=True):
+            st.markdown("#### 基础反思提示 · 非个性化解读")
+            st.write(reading.primary.counsel)
+            st.caption(f"本卦主题：{reading.primary.theme}；变化后的主题：{reading.changed.theme}。这是随机卦象带来的观察角度，不是对现实处境的判断。")
+
     with st.container(border=True):
-        st.subheader("01 · 当前局势")
-        st.write(f"你正处在「{reading.primary.theme}」的阶段。先辨认哪些条件已经成熟，哪些仍由情绪或期待推动。")
-    with st.container(border=True):
-        st.subheader("02 · 关键变化")
-        if reading.moving:
-            st.write(f"第{'、'.join(map(str, reading.moving))}爻发生变化，局势由「{reading.primary.name}」趋向「{reading.changed.name}」。这提示行动可能改变关系结构，需要为后续影响留出余地。")
-        else:
-            st.write(f"此卦没有动爻，主题集中在「{reading.primary.name}」本身。与其频繁换方向，更适合先稳定观察并验证当前判断。")
-    with st.container(border=True):
-        st.subheader("03 · 机会与风险")
-        st.write(f"可观察的变化方向是：{reading.changed.theme}。但卦象不是保证，请用现实证据检验重要判断。")
-    with st.container(border=True):
-        st.subheader("04 · 建议行动")
-        st.write(reading.primary.counsel)
-        st.text_input("写下一件你愿意验证的小事", key="action", max_chars=300, placeholder="例如：本周约两位业内朋友聊聊真实情况")
-    with st.container(border=True):
-        st.subheader("05 · 原典索引与内容边界")
+        st.subheader("原典索引与内容边界")
         st.write(f"本卦：第 {reading.primary.number} 卦《周易》·{reading.primary.traditional}；变卦：第 {reading.changed.number} 卦《周易》·{reading.changed.traditional}。")
         st.markdown("卦序与卦象采用通行本结构；这里的主题和建议是**现代编辑性转译，不是经文或古注原文**。当前版本尚未完成逐条卦爻辞双源校勘，因此不展示未核对的原文。")
         st.link_button("查看《周易》原典", "https://ctext.org/book-of-changes")
 
-    with st.expander("继续追问这一个卦（最多三次）"):
-        for number, item in enumerate(st.session_state.followups, 1):
-            st.write(f"{number}. {item}")
-            st.write(f"这个追问仍应放回「{reading.primary.name} → {reading.changed.name}」的结构中理解。先区分你能影响的部分与只能观察的部分，再用低成本行动获取新信息。卦象不会重抽。")
-        if len(st.session_state.followups) < 3:
-            followup = st.text_input("你的追问", key=f"followup_input_{len(st.session_state.followups)}", max_chars=180)
-            if st.button("记录追问") and followup.strip():
-                st.session_state.followups = [*st.session_state.followups, followup.strip()]
-                st.rerun()
-        st.caption("追问内容目前不会改变解读文本；这是保持原卦不变的反思提示，不是 AI 问答。")
+    if st.session_state.ai:
+        with st.expander("继续追问这一个卦（最多三次）"):
+            for number, item in enumerate(st.session_state.followups, 1):
+                st.text(f"{number}. {item['question']}")
+                show_advice(item["response"])
+            if len(st.session_state.followups) < 3:
+                followup = st.text_input("你的追问", key=f"followup_input_{len(st.session_state.followups)}", max_chars=180)
+                followup_notice = safety_notice(followup)
+                if followup_notice:
+                    st.warning(followup_notice)
+                if st.button("发送追问", disabled=not followup.strip() or bool(followup_notice) or st.session_state.ai_calls >= 12):
+                    response = request_advice(followup.strip())
+                    if response:
+                        st.session_state.followups = [*st.session_state.followups, {"question": followup.strip(), "response": response}]
+                        st.rerun()
+            st.caption("追问沿用原卦和原回答，不重抽、不覆盖；每次发送都会调用 DeepSeek。")
 
     st.divider()
+    st.text_input("写下一件你愿意验证的小事", key="action", max_chars=300, placeholder="例如：本周约两位业内朋友聊聊真实情况")
     st.radio("计划多久后复盘？", options=[7, 30], format_func=lambda days: f"{days} 天后", horizontal=True, key="review_days")
     if st.button("保存到变化档案", type="primary", use_container_width=True):
-        record = make_record(st.session_state.question, lines, st.session_state.action, st.session_state.review_days)
+        record = make_record(st.session_state.question, lines, st.session_state.action, st.session_state.review_days,
+                             birth_profile=st.session_state.birth_profile, ai=st.session_state.ai, followups=st.session_state.followups)
         st.session_state.records = [record, *st.session_state.records][:100]
         go("journal")
 
@@ -215,12 +327,23 @@ def journal_view() -> None:
         st.markdown("### 还没有留下记录")
         st.write("完成一次观变并写下行动，档案会从这里开始。")
     for record in records:
-        reading = resolve_reading(record["lines"])
+        reading = resolve_reading(record["lines"], engine_version=record.get("engine_version", 1))
         created = datetime.fromisoformat(record["created_at"].replace("Z", "+00:00"))
         due = created + timedelta(days=record["review_days"])
         with st.container(border=True):
             st.caption(f"{created.astimezone().strftime('%Y-%m-%d')} · {reading.primary.name} → {reading.changed.name}")
             st.subheader(record["question"])
+            if record.get("engine_version", 1) == 1:
+                st.warning("旧版记录：保留当时的卦名映射以复现历史。旧引擎曾颠倒爻序，不能作为新版本校验依据。")
+            if record.get("birth_profile"):
+                st.text(profile_label(record["birth_profile"]))
+            if record.get("ai"):
+                with st.expander("查看当时的 AI 建议与追问"):
+                    st.caption("这是保存/导入的原回答，未重新生成；导入文件内容不代表已由服务端验证真实性。")
+                    show_advice(record["ai"])
+                    for item in record.get("followups", []):
+                        st.text("追问：" + item["question"])
+                        show_advice(item["response"])
             if record["action"]:
                 st.write("当时决定：", record["action"])
             st.caption("复盘日期：" + due.astimezone().strftime("%Y-%m-%d"))
@@ -236,8 +359,12 @@ def journal_view() -> None:
     st.divider()
     st.subheader("备份与恢复")
     if records:
-        st.download_button("下载我的记录 JSON", data=export_records(records), file_name="guanbian-records.json", mime="application/json", use_container_width=True)
-    uploaded = st.file_uploader("导入之前下载的观变记录", type=["json"], max_upload_size=1)
+        try:
+            backup = export_records(records)
+            st.download_button("下载我的记录 JSON", data=backup, file_name="guanbian-records.json", mime="application/json", use_container_width=True)
+        except ValueError as exc:
+            st.error(str(exc))
+    uploaded = st.file_uploader("导入之前下载的观变记录", type=["json"], max_upload_size=5)
     if uploaded and st.button("导入记录", use_container_width=True):
         try:
             st.session_state.records = import_records(uploaded.getvalue())
@@ -246,7 +373,7 @@ def journal_view() -> None:
         else:
             st.success("记录已导入当前会话。")
             st.rerun()
-    st.caption("备份由你自行保管，包含你输入的问题与复盘内容。导入会替换当前会话的记录。")
+    st.caption("备份包含问题、可选四柱、AI 原回答、行动与复盘，不含 API 密钥或原始生日。请私密保管。导入会替换当前会话的记录。")
 
 
 init_state()

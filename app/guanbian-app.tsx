@@ -12,6 +12,7 @@ type SavedReading = {
   action?: string;
   reviewDate?: string;
   reflection?: string;
+  engineVersion?: 1 | 2;
 };
 
 const prompts = ["我是否应该接受这份新工作？", "这段关系中，我真正需要看清什么？", "这个合作现在适合继续推进吗？"];
@@ -71,6 +72,7 @@ export default function GuanbianApp({ user }: { user: { displayName: string } | 
       action: action.trim(),
       reviewDate,
       createdAt: new Date().toISOString(),
+      engineVersion: 2,
     };
     const next = [record, ...saved.filter((item) => item.question !== question)];
     setSaved(next);
@@ -197,11 +199,12 @@ export default function GuanbianApp({ user }: { user: { displayName: string } | 
           {!saved.length ? <div className="empty-journal"><span>䷋</span><h2>还没有留下记录</h2><p>完成一次观变并写下行动，档案会从这里开始。</p><button onClick={() => setStage("ask")}>提出第一个问题</button></div> :
             <div className="timeline">
               {saved.map((item) => {
-                const result = resolveReading(item.lines);
+                const result = resolveReading(item.lines, item.engineVersion ?? 1);
                 const due = item.reviewDate && new Date(item.reviewDate) <= new Date();
                 return <article key={item.id}>
                   <div className="date"><b>{new Date(item.createdAt).getDate()}</b><span>{new Date(item.createdAt).toLocaleDateString("zh-CN", { month: "short" })}</span></div>
                   <div className="record">
+                    {!item.engineVersion && <p>旧版记录：保留当时的卦名；旧爻序映射已在新版修正。</p>}
                     <div className="record-top"><span>{result.primary.unicode}</span><div><small>{result.primary.name} → {result.changed.name}</small><h2>{item.question}</h2></div><em className={due ? "due" : ""}>{due ? "等待复盘" : `${Math.max(1, Math.ceil((new Date(item.reviewDate || Date.now()).getTime() - Date.now()) / 86400000))} 天后复盘`}</em></div>
                     {item.action && <p className="record-action"><b>当时决定</b>{item.action}</p>}
                     {item.reflection ? <p className="reflection"><b>后来发生</b>{item.reflection}</p> :

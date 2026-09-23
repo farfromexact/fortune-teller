@@ -92,13 +92,16 @@ export const HEXAGRAMS: Hexagram[] = raw.map(([name, traditional, binary, notes]
 
 export function castLine(): LineValue {
   const coins = Array.from({ length: 3 }, () => (Math.random() < 0.5 ? 2 : 3));
-  return coins.reduce((sum, value) => sum + value, 0) as LineValue;
+  return coins.reduce<number>((sum, value) => sum + value, 0) as LineValue;
 }
 
-export function resolveReading(lines: LineValue[]) {
-  if (lines.length !== 6) throw new Error("需要六次完整投掷");
-  const primaryBinary = lines.map((line) => (line === 7 || line === 9 ? "1" : "0")).join("");
-  const changedBinary = lines.map((line) => (line === 6 ? "1" : line === 9 ? "0" : line === 7 ? "1" : "0")).join("");
+export function resolveReading(lines: LineValue[], engineVersion: 1 | 2 = 2) {
+  if (lines.length !== 6 || lines.some(line => ![6, 7, 8, 9].includes(line))) throw new Error("需要六次完整投掷");
+  // The catalogue reads top-to-bottom; casting reads bottom-to-top.
+  // Version 1 is only for reproducing old saved records.
+  const ordered = engineVersion === 1 ? lines : [...lines].reverse();
+  const primaryBinary = ordered.map((line) => (line === 7 || line === 9 ? "1" : "0")).join("");
+  const changedBinary = ordered.map((line) => (line === 6 ? "1" : line === 9 ? "0" : line === 7 ? "1" : "0")).join("");
   const primary = HEXAGRAMS.find((item) => item.binary === primaryBinary)!;
   const changed = HEXAGRAMS.find((item) => item.binary === changedBinary)!;
   const moving = lines.map((line, index) => (line === 6 || line === 9 ? index + 1 : null)).filter(Boolean) as number[];

@@ -19,6 +19,16 @@ class HexagramEngineTests(unittest.TestCase):
             self.assertIn(reading.primary, HEXAGRAMS)
             self.assertIn(reading.changed, HEXAGRAMS)
             self.assertEqual(resolve_reading(values).stable_id, reading.stable_id)
+            self.assertEqual(reading.primary.binary, "".join(str(value % 2) for value in reversed(values)))
+            self.assertEqual(reading.changed.binary, "".join("1" if value in (6, 7) else "0" for value in reversed(values)))
+
+    def test_asymmetric_hexagrams_bottom_to_top(self):
+        self.assertEqual(resolve_reading([7, 8, 8, 8, 7, 8]).primary.name, "屯")
+        self.assertEqual(resolve_reading([8, 7, 8, 8, 8, 7]).primary.name, "蒙")
+        self.assertEqual(resolve_reading([7, 7, 7, 8, 8, 8]).primary.name, "泰")
+        self.assertEqual(resolve_reading([8, 8, 8, 7, 7, 7]).primary.name, "否")
+        reading = resolve_reading([9, 8, 8, 8, 7, 8])
+        self.assertEqual((reading.primary.name, reading.changed.name, reading.moving), ("屯", "比", (1,)))
 
     def test_stable_and_moving_line_examples(self):
         self.assertEqual(resolve_reading([7] * 6).primary.name, "乾")

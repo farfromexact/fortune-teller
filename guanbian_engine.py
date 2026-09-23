@@ -71,11 +71,17 @@ def cast_line() -> int:
     return sum(2 + secrets.randbelow(2) for _ in range(3))
 
 
-def resolve_reading(lines: list[int] | tuple[int, ...]) -> Reading:
+def resolve_reading(lines: list[int] | tuple[int, ...], *, engine_version: int = 2) -> Reading:
     if len(lines) != 6 or any(type(line) is not int or line not in VALID_LINES for line in lines):
         raise ValueError("必须提供由下至上的六个爻值（6、7、8、9）")
-    primary_binary = "".join("1" if line in (7, 9) else "0" for line in lines)
-    changed_binary = "".join("1" if line in (6, 7) else "0" for line in lines)
+    if type(engine_version) is not int or engine_version not in (1, 2):
+        raise ValueError("不支持的卦象引擎版本")
+    # Catalog bits are top-to-bottom; tosses are bottom-to-top.
+    # Version 1 exists ONLY to reproduce records made before this correction.
+    ordered = reversed(lines) if engine_version == 2 else lines
+    values = tuple(ordered)
+    primary_binary = "".join("1" if line in (7, 9) else "0" for line in values)
+    changed_binary = "".join("1" if line in (6, 7) else "0" for line in values)
     moving = tuple(index for index, line in enumerate(lines, 1) if line in (6, 9))
     return Reading(tuple(lines), BY_BINARY[primary_binary], BY_BINARY[changed_binary], moving)
 

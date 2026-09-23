@@ -1,1 +1,2 @@
 streamlit==1.56.0
+lunar-python==1.4.8
