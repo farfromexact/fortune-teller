@@ -19,6 +19,7 @@ LINES = [7, 8, 8, 8, 7, 8]
 
 def answer(lines=None):
     return {"reading_id": resolve_reading(lines or LINES).stable_id,
+            "brief": {"headline": "先核实，再选择", "focus": "先了解新岗位的实际职责。", "reconsider_if": "新岗位也存在你不能接受的条件时，重新比较。"},
             "situation": "目前缺少新岗位的职责信息，先比较两个选择。", "change": "变化视角仅供反思，不是未来保证。",
             "opportunities_risks": "需要核实岗位的实际要求。", "actions": ["本周联系两位同行，记录岗位要求。", "列出三个不能接受的条件，核对新机会。"],
             "boundary": "现代编辑总结，不是经典原文。", "birth_context": "未提供个人背景"}

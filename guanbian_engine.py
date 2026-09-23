@@ -68,7 +68,22 @@ class Reading:
 
 def cast_line() -> int:
     """Three independent fair coins: tails=2, heads=3."""
-    return sum(2 + secrets.randbelow(2) for _ in range(3))
+    return sum(cast_coins())
+
+
+def cast_coins() -> tuple[int, int, int]:
+    """Keep the actual three faces, so animation and audit use the same draw."""
+    return tuple(2 + secrets.randbelow(2) for _ in range(3))
+
+
+def validate_coin_tosses(tosses, lines) -> None:
+    if tosses is None:  # Older records contain only line sums.
+        return
+    if not isinstance(tosses, list) or len(tosses) != len(lines):
+        raise ValueError("铜钱记录与爻数不一致")
+    for coins, line in zip(tosses, lines):
+        if not isinstance(coins, list) or len(coins) != 3 or any(type(v) is not int or v not in (2, 3) for v in coins) or sum(coins) != line:
+            raise ValueError("铜钱正反面与爻值不一致")
 
 
 def resolve_reading(lines: list[int] | tuple[int, ...], *, engine_version: int = 2) -> Reading:

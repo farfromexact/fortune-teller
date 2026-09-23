@@ -7,7 +7,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
-from guanbian_engine import resolve_reading
+from guanbian_engine import resolve_reading, validate_coin_tosses
 from guanbian_birth import validate_profile
 from guanbian_llm import validate_snapshot
 
@@ -21,7 +21,8 @@ def utc_now() -> str:
 
 
 def make_record(question: str, lines: list[int], action: str, review_days: int, *,
-                birth_profile: dict | None = None, ai: dict | None = None, followups: list | None = None) -> dict[str, Any]:
+                birth_profile: dict | None = None, ai: dict | None = None, followups: list | None = None,
+                coin_tosses: list | None = None) -> dict[str, Any]:
     reading = resolve_reading(lines)
     if not 8 <= len(question.strip()) <= 180:
         raise ValueError("问题应为 8 至 180 个字符")
@@ -37,12 +38,14 @@ def make_record(question: str, lines: list[int], action: str, review_days: int, 
         "reflection": "",
         "engine_version": 2, "birth_profile": birth_profile,
         "ai": ai, "followups": followups or [],
+        "coin_tosses": coin_tosses,
     }
     _validate_extensions(record)
     return record
 
 
 def _validate_extensions(record: dict) -> None:
+    validate_coin_tosses(record.get("coin_tosses"), record["lines"])
     profile = validate_profile(record["birth_profile"])
     ai = validate_snapshot(record["ai"], record["question"], record["lines"], profile)
     followups = record["followups"]
@@ -117,6 +120,7 @@ def import_records(payload: bytes) -> list[dict[str, Any]]:
             "created_at": created_at, "reflection": reflection,
             "engine_version": engine_version, "birth_profile": item.get("birth_profile"),
             "ai": item.get("ai"), "followups": item.get("followups", []),
+            "coin_tosses": item.get("coin_tosses"),
         }
         _validate_extensions(record)
         records.append(record)

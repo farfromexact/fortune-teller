@@ -29,9 +29,14 @@ class StreamlitFlowTests(unittest.TestCase):
             button(app, "开始观变  →").click().run()
             self.assertEqual(app.session_state.stage, "cast")
             self.assertIsNone(app.session_state.birth_profile["pillars"]["hour"])
-            with patch("guanbian_engine.cast_line", side_effect=LINES):
+            app.checkbox(key="simple_cast").check().run()
+            coin_faces = [[3, 2, 2] if v == 7 else [3, 3, 2] for v in LINES]
+            with patch("guanbian_engine.cast_coins", side_effect=coin_faces):
                 for index in range(6):
                     button(app, f"第 {index + 1} 次投掷").click().run()
+            self.assertEqual(app.session_state.stage, "cast")
+            self.assertEqual(app.session_state.coin_tosses, coin_faces)
+            button(app, "查看风向与解读 →").click().run()
             self.assertEqual(app.session_state.stage, "reading")
             self.assertEqual(app.session_state.question, QUESTION)
             self.assertEqual(app.session_state.lines, LINES)
@@ -40,6 +45,8 @@ class StreamlitFlowTests(unittest.TestCase):
             self.assertEqual(len(app.exception), 0)
             original = app.session_state.ai.copy()
             self.assertEqual(opener.call_count, 1)
+            self.assertTrue(any('先核实，再选择' in item.value for item in app.markdown))
+            self.assertTrue(any('此问风向' in item.value for item in app.markdown))
             app.run()
             self.assertEqual(opener.call_count, 1)  # Reruns do not bill again.
             app.text_input(key="followup_input_0").set_value("下一步需要了解哪些情况？").run()
@@ -53,6 +60,7 @@ class StreamlitFlowTests(unittest.TestCase):
             self.assertEqual(len(app.exception), 0)
             record = app.session_state.records[0]
             self.assertEqual(record["ai"], original)
+            self.assertEqual(record["coin_tosses"], coin_faces)
             self.assertEqual(record["birth_profile"]["pillars"]["day"], "辛巳")
             app.text_area(key=f"reflection_{record['id']}").set_value("已经完成访谈，有了新的信息").run()
             button(app, "完成复盘").click().run()
@@ -72,9 +80,11 @@ class StreamlitFlowTests(unittest.TestCase):
             self.assertTrue(app.warning)
             app.text_area(key="question_input").set_value(QUESTION).run()
             button(app, "开始观变  →").click().run()
-            with patch("guanbian_engine.cast_line", return_value=7):
+            app.checkbox(key="simple_cast").check().run()
+            with patch("guanbian_engine.cast_coins", return_value=(3, 2, 2)):
                 for index in range(6):
                     button(app, f"第 {index + 1} 次投掷").click().run()
+            button(app, "查看风向与解读 →").click().run()
             self.assertEqual(len(app.exception), 0)
             self.assertTrue(button(app, "结合我的问题生成建议").disabled)
             self.assertFalse(button(app, "保存到变化档案").disabled)

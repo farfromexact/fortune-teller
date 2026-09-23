@@ -4,17 +4,22 @@ from __future__ import annotations
 
 import html
 import os
+import uuid
 from datetime import date, datetime, timedelta
 
 import streamlit as st
 
-from guanbian_engine import cast_line, line_glyph, line_label, resolve_reading
+from guanbian_engine import line_glyph, line_label, resolve_reading
 from guanbian_records import export_records, import_records, make_record
 from guanbian_birth import from_birthday, from_manual, profile_label
 from guanbian_llm import AdviceError, Config, DEFAULT_MODEL, generate_advice, safety_notice
+from guanbian_ritual import accept_toss
+from guanbian_visuals import (VISUAL_STYLES, register_visual_components, wind_card_html,
+                             wind_card_svg, brief_html)
 
 
 st.set_page_config(page_title="观变 · 以易观时，以行验知", page_icon="䷀", layout="centered")
+coin_stage, export_button = register_visual_components()
 
 STYLES = """
 <style>
@@ -48,6 +53,7 @@ div[data-testid="stTextArea"] textarea, div[data-testid="stTextInput"] input { b
 </style>
 """
 st.markdown(STYLES, unsafe_allow_html=True)
+st.markdown(VISUAL_STYLES, unsafe_allow_html=True)
 
 
 def init_state() -> None:
@@ -55,6 +61,8 @@ def init_state() -> None:
         "stage": "ask", "question": "", "lines": [], "records": [],
         "followups": [], "action": "", "review_days": 7,
         "birth_profile": None, "ai": None, "ai_calls": 0,
+        "cast_run_id": uuid.uuid4().hex, "coin_tosses": [], "last_coins": None,
+        "simple_cast": False,
     }
     for key, value in defaults.items():
         if key not in st.session_state:
@@ -74,6 +82,9 @@ def new_question() -> None:
     st.session_state.question_input = ""
     st.session_state.birth_profile = None
     st.session_state.ai = None
+    st.session_state.cast_run_id = uuid.uuid4().hex
+    st.session_state.coin_tosses = []
+    st.session_state.last_coins = None
     for key in list(st.session_state):
         if key.startswith("birth_input_"):
             del st.session_state[key]
@@ -186,6 +197,9 @@ def ask_view() -> None:
             st.session_state.followups = []
             st.session_state.birth_profile = profile
             st.session_state.ai = None
+            st.session_state.cast_run_id = uuid.uuid4().hex
+            st.session_state.coin_tosses = []
+            st.session_state.last_coins = None
             go("cast")
     st.caption("问题与生辰不会改变随机卦象。完成起卦后，可选择让 DeepSeek 结合这些背景生成建议。")
     st.markdown("#### 不知道怎么问？")
@@ -194,32 +208,69 @@ def ask_view() -> None:
     st.caption("不作绝对预言　◇　卦象可复核　◇　结果留待行动验证")
 
 
+def handle_coin_event() -> None:
+    event = st.session_state.get("coin_ritual", {}).get("toss")
+    accept_toss(st.session_state, event)
+
+
 def cast_view() -> None:
     if st.button("← 修改问题"):
         go("ask")
     st.markdown('<div class="gb-eyebrow">三枚铜钱 · 六次成卦</div>', unsafe_allow_html=True)
     st.title("让问题安静下来")
     st.markdown(f'<div class="gb-query">“{html.escape(st.session_state.question)}”</div>', unsafe_allow_html=True)
+    st.checkbox("简洁模式（减少动态效果）", key="simple_cast")
     lines = st.session_state.lines
-    with st.container(border=True):
-        for index in range(5, -1, -1):
-            label = ("初", "二", "三", "四", "五", "上")[index]
-            value = lines[index] if index < len(lines) else None
-            glyph = line_glyph(value) if value else "┄┄┄┄┄┄"
-            css = "gb-yao gb-moving" if value in (6, 9) else "gb-yao"
-            description = line_label(value) if value else "待投"
-            st.markdown(f'<div class="{css}">{label}　{glyph}　<span class="gb-note">{description}</span></div>', unsafe_allow_html=True)
+    coin_stage(key="coin_ritual", data={"run_id": st.session_state.cast_run_id, "lines": lines,
+               "coins": st.session_state.last_coins, "simple": st.session_state.simple_cast},
+               on_toss_change=handle_coin_event)
     st.progress(len(lines) / 6, text=f"已完成 {len(lines)} / 6 次")
-    if len(lines) < 6:
+    if len(lines) < 6 and st.session_state.simple_cast:
         if st.button(f"第 {len(lines) + 1} 次投掷", type="primary", use_container_width=True):
-            st.session_state.lines = [*lines, cast_line()]
-            if len(st.session_state.lines) == 6:
-                go("reading")
+            accept_toss(st.session_state, {"run_id": st.session_state.cast_run_id, "index": len(lines) + 1})
             st.rerun()
-    else:
-        if st.button("查看结果", type="primary", use_container_width=True):
+    if len(lines) == 6:
+        if st.button("查看风向与解读 →", type="primary", use_container_width=True):
             go("reading")
-    st.caption("每次由三枚独立的虚拟铜钱生成一个爻；六爻由下至上排列。")
+    if lines:
+        with st.expander("查看已落定的投掷记录"):
+            show_toss_log(lines, st.session_state.coin_tosses)
+    st.caption("每次由服务端独立投掷三枚铜钱，动画只呈现同一结果；六爻由下至上排列。支持系统减少动态效果设置。")
+
+
+def show_toss_log(lines: list, tosses: list | None) -> None:
+    for index, value in enumerate(lines):
+        coins = tosses[index] if tosses and index < len(tosses) else None
+        detail = " + ".join(map(str, coins)) + f" = {value}" if coins else f"爻值 {value}（旧记录未保存钱面）"
+        st.text(f"第 {index + 1} 次 · {detail} · {line_label(value)}")
+
+
+def show_cast_details(reading, lines, tosses) -> None:
+    left, middle, right = st.columns([2, 1, 2])
+    with left:
+        st.caption("本卦 · " + reading.primary.name)
+        for value in reversed(lines):
+            css = "gb-yao gb-moving" if value in (6, 9) else "gb-yao"
+            st.markdown(f'<div class="{css}">{line_glyph(value)}</div>', unsafe_allow_html=True)
+    with middle:
+        st.markdown("### →")
+        st.caption("、".join(map(str, reading.moving)) + " 爻动" if reading.moving else "无动爻")
+    with right:
+        st.caption("变卦 · " + reading.changed.name)
+        for value in reversed(lines):
+            changed_value = 7 if value == 6 else 8 if value == 9 else value
+            st.markdown(f'<div class="gb-yao">{line_glyph(changed_value)}</div>', unsafe_allow_html=True)
+    st.divider()
+    show_toss_log(lines, tosses)
+
+
+def show_wind_card(reading) -> None:
+    st.markdown(wind_card_html(reading), unsafe_allow_html=True)
+    with st.expander("留一张风向卡 · 可保存分享"):
+        st.caption("图片只包含卦名、卦象和编辑性提示，不含问题、生辰、AI 私人建议或档案编号。")
+        svg = wind_card_svg(reading)
+        export_button(key="wind_card_download", data={"svg": svg, "filename": f"guanbian-{reading.primary.number:02d}.png"})
+        st.download_button("SVG 备用下载", data=svg.encode("utf-8"), file_name=f"guanbian-{reading.primary.number:02d}.svg", mime="image/svg+xml")
 
 
 def reading_view() -> None:
@@ -229,33 +280,12 @@ def reading_view() -> None:
     reading = resolve_reading(lines)
     if st.button("← 新的问题"):
         new_question()
-    st.markdown(f'<div class="gb-eyebrow">第 {reading.primary.number} 卦</div>', unsafe_allow_html=True)
-    st.markdown(f'<div class="gb-hex">{reading.primary.symbol}　{reading.primary.name}</div>', unsafe_allow_html=True)
-    st.markdown(f'<div class="gb-theme">{html.escape(reading.primary.theme)}</div>', unsafe_allow_html=True)
-    st.markdown(f'<div class="gb-query">“{html.escape(st.session_state.question)}”</div>', unsafe_allow_html=True)
-    left, middle, right = st.columns([2, 1, 2])
-    with left:
-        st.caption("本卦")
-        for value in reversed(lines):
-            css = "gb-yao gb-moving" if value in (6, 9) else "gb-yao"
-            st.markdown(f'<div class="{css}">{line_glyph(value)}</div>', unsafe_allow_html=True)
-        st.write(reading.primary.name)
-    with middle:
-        st.markdown("### →")
-        st.caption("、".join(map(str, reading.moving)) + " 爻动" if reading.moving else "无动爻")
-    with right:
-        st.caption("变卦")
-        for value in reversed(lines):
-            changed_value = 7 if value == 6 else 8 if value == 9 else value
-            st.markdown(f'<div class="gb-yao">{line_glyph(changed_value)}</div>', unsafe_allow_html=True)
-        st.write(reading.changed.name)
-
     notice = safety_notice(st.session_state.question)
     if notice:
         st.warning(notice)
         return
-
-    st.divider()
+    show_wind_card(reading)
+    st.markdown(f'<div class="gb-query">“{html.escape(st.session_state.question)}”</div>', unsafe_allow_html=True)
     st.subheader("把卦象放回你的问题")
     if st.session_state.birth_profile:
         with st.expander("本次使用的生辰背景"):
@@ -273,7 +303,8 @@ def reading_view() -> None:
                 st.session_state.ai = response
                 st.rerun()
     if st.session_state.ai:
-        with st.container(border=True):
+        st.markdown(brief_html(st.session_state.ai["advice"]), unsafe_allow_html=True)
+        with st.expander("展开完整解读 · 五个观察角度"):
             show_advice(st.session_state.ai)
     else:
         with st.container(border=True):
@@ -281,8 +312,9 @@ def reading_view() -> None:
             st.write(reading.primary.counsel)
             st.caption(f"本卦主题：{reading.primary.theme}；变化后的主题：{reading.changed.theme}。这是随机卦象带来的观察角度，不是对现实处境的判断。")
 
-    with st.container(border=True):
-        st.subheader("原典索引与内容边界")
+    with st.expander("查看六爻与投掷记录"):
+        show_cast_details(reading, lines, st.session_state.coin_tosses)
+    with st.expander("原典索引与内容边界"):
         st.write(f"本卦：第 {reading.primary.number} 卦《周易》·{reading.primary.traditional}；变卦：第 {reading.changed.number} 卦《周易》·{reading.changed.traditional}。")
         st.markdown("卦序与卦象采用通行本结构；这里的主题和建议是**现代编辑性转译，不是经文或古注原文**。当前版本尚未完成逐条卦爻辞双源校勘，因此不展示未核对的原文。")
         st.link_button("查看《周易》原典", "https://ctext.org/book-of-changes")
@@ -309,7 +341,8 @@ def reading_view() -> None:
     st.radio("计划多久后复盘？", options=[7, 30], format_func=lambda days: f"{days} 天后", horizontal=True, key="review_days")
     if st.button("保存到变化档案", type="primary", use_container_width=True):
         record = make_record(st.session_state.question, lines, st.session_state.action, st.session_state.review_days,
-                             birth_profile=st.session_state.birth_profile, ai=st.session_state.ai, followups=st.session_state.followups)
+                             birth_profile=st.session_state.birth_profile, ai=st.session_state.ai, followups=st.session_state.followups,
+                             coin_tosses=st.session_state.coin_tosses)
         st.session_state.records = [record, *st.session_state.records][:100]
         go("journal")
 
@@ -340,6 +373,7 @@ def journal_view() -> None:
             if record.get("ai"):
                 with st.expander("查看当时的 AI 建议与追问"):
                     st.caption("这是保存/导入的原回答，未重新生成；导入文件内容不代表已由服务端验证真实性。")
+                    st.markdown(brief_html(record["ai"]["advice"]), unsafe_allow_html=True)
                     show_advice(record["ai"])
                     for item in record.get("followups", []):
                         st.text("追问：" + item["question"])

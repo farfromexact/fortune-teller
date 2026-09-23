@@ -54,6 +54,21 @@ python -m unittest discover -s tests -p "test_*.py"
 - 时间不详时不填时柱；若当日首尾年/月柱不同，也留空相应柱，避免伪精确。手填仅检查六十甲子格式，不证明四柱历法一致。
 - 原始生日只在会话中用于排盘；保存/导出只含派生四柱、规则和不确定性说明。四柱仍属个人信息，请私密保管备份。此功能增加互动和文化背景，**不代表预测准确率提高**，不推演大运、命格吉凶或终身命运。
 
+### 铜钱仪式、风向卡与短答案
+
+- 起卦台采用本地 SVG 铜钱、CSS 3D 翻转与落定动效；每次三枚钱面的 2/3 值由 Python 服务端独立生成，动画展示的正反面、成爻总数和档案记录共用同一结果。重复事件按本次起卦 ID + 投掷序号去重，不因动画或网络重试改卦。六次完成后由用户进入结果，保留最后一次动画。
+- 提供“简洁模式”，也尊重浏览器的 `prefers-reduced-motion` 设置。简洁模式保留原生 Streamlit 投掷按钮；没有动画也能完成全部流程。没有声音、外部图片或动效服务请求。
+- 结果页展示“此问风向”卡，内容来自现有卦象目录的现代编辑性提示，不是个人预测，也不是每日运势。可在浏览器本地生成 1080 × 1350 PNG，另有 SVG 备用下载；图片不包含问题、生辰、AI 私人建议或档案编号。
+- 新 AI 提示词 v2 在同一次请求中生成短答案与完整解读。短答案展示关注点、第一项行动和重新考虑的现实信号；第一项行动直接使用详细回答的原字段，避免两套建议。完整解读默认折叠。旧 v1 快照仍能导入，仅展示原文摘录，不重新调用模型或改写历史。
+- `assets/ritual.html`、`assets/ritual.css`、`assets/ritual.js` 和 `assets/wind_export.js` 必须随应用部署。交互采用 [Streamlit Components v2](https://docs.streamlit.io/develop/concepts/custom-components/components-v2/examples)，依赖版本仍为 `streamlit==1.56.0`。
+
+组件及规则回归测试：
+
+```powershell
+python -m unittest discover -s tests -p "test_*.py"
+node --experimental-strip-types --test --test-isolation=none tests/iching-engine.test.mjs tests/ritual-component.test.mjs
+```
+
 ### 记录版本与爻序修正
 
 新记录使用引擎 v2：六次投掷由下至上，目录二进制由上至下，映射前反转爻序。已加入屯、蒙、泰、否和单动爻回归测试，以及 4096 种六爻状态测试。

@@ -13,7 +13,7 @@ from guanbian_birth import validate_profile
 from guanbian_engine import resolve_reading
 
 
-PROMPT_VERSION = "guanbian-advice-v1"
+PROMPT_VERSION = "guanbian-advice-v2"
 DEFAULT_MODEL = "deepseek-flash"
 ENDPOINT = "https://api.deepseek.com/chat/completions"
 
@@ -48,9 +48,9 @@ def context_id(question: str, lines: list[int], profile: dict | None) -> str:
     return hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
 
 
-def validate_advice(value: dict, reading_id: str) -> dict:
+def validate_advice(value: dict, reading_id: str, *, require_brief: bool = False) -> dict:
     fields = {"reading_id", "situation", "change", "opportunities_risks", "actions", "boundary", "birth_context"}
-    if not isinstance(value, dict) or set(value) != fields or value.get("reading_id") != reading_id:
+    if not isinstance(value, dict) or set(value) not in (fields, fields | {"brief"}) or value.get("reading_id") != reading_id:
         raise ValueError("建议结构或卦象标识不一致")
     for key in fields - {"reading_id", "actions"}:
         if not isinstance(value[key], str) or not 1 <= len(value[key]) <= 650:
@@ -59,6 +59,15 @@ def validate_advice(value: dict, reading_id: str) -> dict:
         raise ValueError("行动建议数量无效")
     if any(not isinstance(item, str) or not 1 <= len(item) <= 300 for item in value["actions"]):
         raise ValueError("行动建议内容无效")
+    if require_brief and "brief" not in value:
+        raise ValueError("缺少短答案")
+    if "brief" in value:
+        brief = value["brief"]
+        limits = {"headline": 32, "focus": 100, "reconsider_if": 120}
+        if not isinstance(brief, dict) or set(brief) != set(limits):
+            raise ValueError("短答案结构无效")
+        if any(not isinstance(brief[k], str) or not 1 <= len(brief[k]) <= limit for k, limit in limits.items()):
+            raise ValueError("短答案长度无效")
     combined = json.dumps(value, ensure_ascii=False)
     if re.search(r"命中注定|必定成功|必定失败|血光之灾|百分之百|准确率\s*\d|《周易》.*曰|爻辞[：:]|卦辞[：:]", combined):
         raise ValueError("建议包含未支持的预言或引文")
@@ -75,8 +84,9 @@ themes_and_counsel 全是现代编辑总结，不是经典原文。没有提供�
 医疗、法律、投资及自伤/人身安全问题：停止占卜推断，给出求助或专业咨询方向，不作具体诊疗、买卖或法律判断。
 若有追问，保留原卦和原建议作为上下文；新信息可以调整行动建议，但需明确原因，不能悄悄推翻原判断。
 输出简体中文，直接、温和、具体，不用 Markdown、链接、HTML或经文引用。每段 60 至 140 字，actions 2 至 4 项，每项包括行动和可观察的验证信号。birth_context 无背景时写“未提供个人背景”。
+另外提供 brief 短答案：headline 不超过 18 字；focus 不超过 65 字，说清本次问题最值得关注的事；reconsider_if 不超过 80 字，说清什么现实新信息出现时应重新考虑。必须与同一份详细解读一致，不增加新结论，不写确定的吉凶。actions 第一项是不超过 90 字的一件优先行动，将原样展示在短答案卡中。
 严格按示例 JSON 字段返回，reading_id 必须照抄输入：
-{"reading_id":"照抄", "situation":"当前局势与问题理解", "change":"变化视角及其不确定性", "opportunities_risks":"机会、风险与缺失信息", "actions":["一项低风险行动和验证信号", "另一项行动和验证信号"], "boundary":"资料边界：现代编辑总结，不是经典原文；现实判断仍需哪些证据", "birth_context":"可选文化反思，非事实断言"}
+{"reading_id":"照抄", "brief":{"headline":"先核实条件，再决定方向", "focus":"当前问题的关键", "reconsider_if":"需要重新判断的现实信号"}, "situation":"当前局势与问题理解", "change":"变化视角及其不确定性", "opportunities_risks":"机会、风险与缺失信息", "actions":["一项低风险行动和验证信号", "另一项行动和验证信号"], "boundary":"资料边界：现代编辑总结，不是经典原文；现实判断仍需哪些证据", "birth_context":"可选文化反思，非事实断言"}
 """
 
 
@@ -106,7 +116,7 @@ def generate_advice(config: Config, question: str, lines: list[int], profile: di
     body = {"model": config.model, "messages": [{"role": "system", "content": SYSTEM},
              {"role": "user", "content": json.dumps(payload, ensure_ascii=False)}],
             "response_format": {"type": "json_object"}, "thinking": {"type": "disabled"},
-            "max_tokens": 2200, "stream": False}
+            "max_tokens": 2600, "stream": False}
     request = Request(ENDPOINT, data=json.dumps(body).encode(), headers={
         "Authorization": f"Bearer {config.api_key}", "Content-Type": "application/json"}, method="POST")
     try:
@@ -118,7 +128,7 @@ def generate_advice(config: Config, question: str, lines: list[int], profile: di
         choice = envelope["choices"][0]
         if choice["finish_reason"] != "stop":
             raise ValueError("incomplete")
-        advice = validate_advice(json.loads(choice["message"]["content"]), reading.stable_id)
+        advice = validate_advice(json.loads(choice["message"]["content"]), reading.stable_id, require_brief=True)
     except HTTPError as exc:
         message = {401: "DeepSeek 密钥无效，请检查服务端 Secrets。", 402: "DeepSeek 余额不足。",
                    429: "DeepSeek 请求过于频繁，请稍后重试。"}.get(exc.code, "DeepSeek 暂时无法响应，请稍后重试。")
@@ -138,7 +148,7 @@ def validate_snapshot(snapshot: dict | None, question: str, lines: list[int], pr
     expected = {"provider", "model", "prompt_version", "created_at", "context_id", "advice"}
     if not isinstance(snapshot, dict) or set(snapshot) != expected:
         raise ValueError("AI 建议快照格式无效")
-    if snapshot["provider"] != "DeepSeek" or snapshot["prompt_version"] != PROMPT_VERSION:
+    if snapshot["provider"] != "DeepSeek" or snapshot["prompt_version"] not in ("guanbian-advice-v1", PROMPT_VERSION):
         raise ValueError("不支持的 AI 建议版本")
     if not isinstance(snapshot["model"], str) or not re.fullmatch(r"[a-zA-Z0-9._-]{1,80}", snapshot["model"]):
         raise ValueError("模型标识无效")
@@ -147,5 +157,5 @@ def validate_snapshot(snapshot: dict | None, question: str, lines: list[int], pr
     if not isinstance(snapshot["created_at"], str):
         raise ValueError("AI 建议时间无效")
     datetime.fromisoformat(snapshot["created_at"])
-    validate_advice(snapshot["advice"], resolve_reading(lines).stable_id)
+    validate_advice(snapshot["advice"], resolve_reading(lines).stable_id, require_brief=snapshot["prompt_version"] == PROMPT_VERSION)
     return snapshot
